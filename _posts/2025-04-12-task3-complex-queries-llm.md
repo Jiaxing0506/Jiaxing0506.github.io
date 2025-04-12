@@ -1,13 +1,11 @@
 ---
 layout: post
-title: "Task 3: MySQL Queries and LLM Testing"
+title: "MySQL Queries and LLM Testing"
 date: 2025-04-12 11:00:00 +0800
 categories: 数据分析
 ---
 
-
-
-## 任务三：MySQL查询与 LLM 测试报告
+## 任务三：MySQL查询与 LLM 测试
 
 ### 任务概述
 任务三的目标是使用 MySQL 导入电信数据集后，对数据提出问题并解答，然后使用大语言模型（LLM）生成对应的 SQL 语句，分析 LLM 在处理 SQL 任务中的表现和问题。电信数据集包含客户信息，如客户 ID、使用时长（`tenure`）、是否流失（`Churn`）、月费（`MonthlyCharges`）和合同类型（`Contract`）。我设计了两个案例，分别分析续约次数和合同变更对流失率的影响。
@@ -39,34 +37,69 @@ CREATE TABLE telco_data (
    - 按流失率降序排列。
 
 #### 我的解答
-我使用 MySQL 创建了 `renewal_records` 表，并计算了流失率和平均月费。SQL 语句如下：
+我结合 MySQL 和 PySpark 完成了分析，具体步骤如下：
 
-```sql
--- 创建 renewal_records 表
-DROP TABLE IF EXISTS renewal_records;
-CREATE TABLE renewal_records (
-    customerID VARCHAR(20) PRIMARY KEY,
-    renewal_count INT,
-    last_renewal_tenure INT
-);
+1. **在 MySQL 中创建 `renewal_records` 表并插入数据**：
+   我使用 `mysql.connector` 连接 MySQL，创建表并插入数据，代码如下：
 
-INSERT INTO renewal_records (customerID, renewal_count, last_renewal_tenure)
-SELECT 
-    customerID,
-    FLOOR(tenure / 12) AS renewal_count,
-    FLOOR(tenure / 12) * 12 AS last_renewal_tenure
-FROM telco_data;
+   ```python
+   # 移除旧表以避免错误
+   cursor.execute("DROP TABLE IF EXISTS renewal_records")
+   conn.commit()  # 提交更改，确保状态同步
 
--- 分析续约次数对流失率的影响
-SELECT 
-    r.renewal_count,
-    ROUND(SUM(CASE WHEN t.Churn = 'Yes' THEN 1 ELSE 0 END) / COUNT(*), 4) AS churn_rate,
-    ROUND(AVG(t.MonthlyCharges), 2) AS avg_monthly_charges
-FROM renewal_records r
-JOIN telco_data t ON r.customerID = t.customerID
-GROUP BY r.renewal_count
-ORDER BY churn_rate DESC;
-```
+   # 创建 renewal_records 表
+   cursor.execute("""
+   CREATE TABLE renewal_records (
+  customerID VARCHAR(20) PRIMARY KEY,
+  renewal_count INT,
+  last_renewal_tenure INT
+   )
+   """)
+   conn.commit()  # 提交更改
+
+   # 插入数据
+   cursor.execute("""
+   INSERT INTO renewal_records (customerID, renewal_count, last_renewal_tenure)
+   SELECT 
+  customerID,
+  FLOOR(tenure / 12) AS renewal_count,
+  FLOOR(tenure / 12) * 12 AS last_renewal_tenure
+   FROM telco_data
+   """)
+   conn.commit()  # 提交更改
+   print("renewal_records 表创建并插入数据成功！")
+   ```
+
+2. **加载 `renewal_records` 表到 PySpark 并注册为临时表**：
+   我使用 PySpark 的 JDBC 连接器将 MySQL 表加载到 Spark 中，并注册为临时表：
+
+   ```python
+   renewal_df = spark.read.format("jdbc") \
+  .option("url", "jdbc:mysql://localhost:3306/telco_churn?useSSL=false&serverTimezone=UTC") \
+  .option("driver", "com.mysql.cj.jdbc.Driver") \
+  .option("dbtable", "renewal_records") \
+  .option("user", "root") \
+  .option("password", "123456") \
+  .load()
+   renewal_df.createOrReplaceTempView("renewal_records")
+   ```
+
+3. **在 PySpark 中执行查询**：
+   我使用 `spark.sql` 执行查询，分析续约次数对流失率的影响：
+
+   ```python
+   print("分析续约次数对流失率的影响：")
+   spark.sql("""
+   SELECT 
+  r.renewal_count,
+  ROUND(SUM(CASE WHEN t.Churn = 'Yes' THEN 1 ELSE 0 END) / COUNT(*), 4) AS churn_rate,
+  ROUND(AVG(t.MonthlyCharges), 2) AS avg_monthly_charges
+   FROM renewal_records r
+   JOIN telco_data t ON r.customerID = t.customerID
+   GROUP BY r.renewal_count
+   ORDER BY churn_rate DESC
+   """).show()
+   ```
 
 **结果**：
 
@@ -150,45 +183,80 @@ ORDER BY churn_rate DESC;
    - 按流失率降序排列。
 
 #### 我的解答
-我使用 MySQL 创建了 `contract_changes` 表，并计算了流失率和平均 `tenure`。SQL 语句如下：
+我结合 MySQL 和 PySpark 完成了分析，具体步骤如下：
 
-```sql
--- 创建 contract_changes 表
-DROP TABLE IF EXISTS contract_changes;
-CREATE TABLE contract_changes (
-    customerID VARCHAR(20) PRIMARY KEY,
-    previous_contract VARCHAR(20),
-    current_contract VARCHAR(20),
-    change_tenure INT
-);
+1. **在 MySQL 中创建 `contract_changes` 表并插入数据**：
+   我使用 `mysql.connector` 连接 MySQL，创建表并插入数据，代码如下：
 
-INSERT INTO contract_changes (customerID, previous_contract, current_contract, change_tenure)
-SELECT 
-    customerID,
-    Contract AS previous_contract,
-    CASE 
-   WHEN tenure < 24 THEN Contract
-   WHEN Contract = 'Month-to-month' THEN 'One year'
-   WHEN Contract = 'One year' THEN 'Two year'
-   WHEN Contract = 'Two year' THEN 'Month-to-month'
-    END AS current_contract,
-    CASE 
-   WHEN tenure >= 24 THEN 24 
-   ELSE 0 
-    END AS change_tenure
-FROM telco_data;
+   ```python
+   # 移除旧表以避免错误
+   cursor.execute("DROP TABLE IF EXISTS contract_changes")
+   conn.commit()  # 提交更改
 
--- 分析合同变更对流失风险的影响
-SELECT 
-    c.previous_contract,
-    c.current_contract,
-    ROUND(SUM(CASE WHEN t.Churn = 'Yes' THEN 1 ELSE 0 END) / COUNT(*), 4) AS churn_rate,
-    ROUND(AVG(t.tenure), 2) AS avg_tenure
-FROM contract_changes c
-JOIN telco_data t ON c.customerID = t.customerID
-GROUP BY c.previous_contract, c.current_contract
-ORDER BY churn_rate DESC;
-```
+   # 创建 contract_changes 表
+   cursor.execute("""
+   CREATE TABLE contract_changes (
+  customerID VARCHAR(20) PRIMARY KEY,
+  previous_contract VARCHAR(20),
+  current_contract VARCHAR(20),
+  change_tenure INT
+   )
+   """)
+   conn.commit()  # 提交更改
+
+   # 插入数据
+   cursor.execute("""
+   INSERT INTO contract_changes (customerID, previous_contract, current_contract, change_tenure)
+   SELECT 
+  customerID,
+  Contract AS previous_contract,
+  CASE 
+ WHEN tenure < 24 THEN Contract
+ WHEN Contract = 'Month-to-month' THEN 'One year'
+ WHEN Contract = 'One year' THEN 'Two year'
+ WHEN Contract = 'Two year' THEN 'Month-to-month'
+  END AS current_contract,
+  CASE 
+ WHEN tenure < 24 THEN 0
+ ELSE 24
+  END AS change_tenure
+   FROM telco_data
+   """)
+   conn.commit()  # 提交更改
+   print("contract_changes 表创建并插入数据成功！")
+   ```
+
+2. **加载 `contract_changes` 表到 PySpark 并注册为临时表**：
+   我使用 PySpark 的 JDBC 连接器将 MySQL 表加载到 Spark 中，并注册为临时表：
+
+   ```python
+   contract_changes_df = spark.read.format("jdbc") \
+  .option("url", "jdbc:mysql://localhost:3306/telco_churn?useSSL=false&serverTimezone=UTC") \
+  .option("driver", "com.mysql.cj.jdbc.Driver") \
+  .option("dbtable", "contract_changes") \
+  .option("user", "root") \
+  .option("password", "123456") \
+  .load()
+   contract_changes_df.createOrReplaceTempView("contract_changes")
+   ```
+
+3. **在 PySpark 中执行查询**：
+   我使用 `spark.sql` 执行查询，分析合同变更对流失风险的影响：
+
+   ```python
+   print("分析合同变更对流失风险的影响：")
+   spark.sql("""
+   SELECT 
+  c.previous_contract,
+  c.current_contract,
+  ROUND(SUM(CASE WHEN t.Churn = 'Yes' THEN 1 ELSE 0 END) / COUNT(*), 4) AS churn_rate,
+  ROUND(AVG(t.tenure), 2) AS avg_tenure
+   FROM contract_changes c
+   JOIN telco_data t ON c.customerID = t.customerID
+   GROUP BY c.previous_contract, c.current_contract
+   ORDER BY churn_rate DESC
+   """).show()
+   ```
 
 **结果**：
 
@@ -269,7 +337,7 @@ Qwen2.5 Max 在生成 SQL 语句时存在以下问题：
 - **语法兼容性问题**：使用了 PostgreSQL 的语法（`::NUMERIC`），不适用于 MySQL。
 - **逻辑细节缺失**：未充分考虑数据类型和计算逻辑的正确性。
 
-相比之下，我的解答更注重 MySQL 的语法兼容性和表结构的完整性，确保了 SQL 语句的正确性和可执行性。
+相比之下，我的解答更注重 MySQL 和 PySpark 的集成，确保了表结构的完整性和查询的正确性。
 
 ### 结论
-任务三通过 MySQL 对电信数据集进行了复杂查询，分析了续约次数和合同变更对客户流失的影响。LLM（Qwen2.5 Max）在生成 SQL 语句时表现出一定的逻辑能力（提到的两个例子是用来测试的好多个例子中出现错误的，其他相对简单任务LLM在处理时不容易出现问题），但缺乏对数据库技术约束和语法兼容性的理解。
+任务三通过 MySQL 和 PySpark 对电信数据集进行了复杂查询，分析了续约次数和合同变更对客户流失的影响。LLM（Qwen2.5 Max）在生成 SQL 语句时表现出一定的逻辑能力（提到的两个例子是用来测试的好多个例子中出现错误的，其他相对简单任务 LLM 在处理时不容易出现问题），但缺乏对数据库技术约束和语法兼容性的理解。未来可以改进 LLM 在数据类型识别、语法适配和技术约束理解方面的能力。

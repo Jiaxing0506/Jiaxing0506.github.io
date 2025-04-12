@@ -12,5 +12,4 @@ In Task 2, I conducted a survival analysis on a telecommunications dataset to st
 
 ### Full Report
 - **View the detailed report**: [Task 2 Survival Analysis Report (PDF)](/assets/Q2_report.pdf)  
-  *(Click to view the PDF in your browser, similar to how arXiv displays papers.)*
 - **Download the report**: If the PDF does not display, you can [download the full Task 2 report here](/assets/Q2_report.pdf).
